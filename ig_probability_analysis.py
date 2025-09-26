@@ -169,6 +169,47 @@ def calculate_ig_returns(merged_data):
     
     return np.array(annual_returns), np.array(treasury_yields), start_dates
 
+def remove_vertical_line_data(ig_returns, treasury_yields, threshold_count=15):
+    """移除形成垂直线的问题数据"""
+    print(f"正在移除垂直线数据（阈值: {threshold_count}个重复值）...")
+    
+    # 统计每个国债收益率值的出现次数
+    from collections import Counter
+    yield_counts = Counter(treasury_yields.round(3))  # 四舍五入到3位小数
+    
+    # 找出出现次数过多的收益率值
+    problematic_yields = [yield_val for yield_val, count in yield_counts.items() 
+                         if count >= threshold_count]
+    
+    if len(problematic_yields) > 0:
+        print(f"发现 {len(problematic_yields)} 个形成垂直线的收益率值，正在清理...")
+        
+        # 创建掩码，移除问题数据
+        keep_mask = np.ones(len(treasury_yields), dtype=bool)
+        
+        for yield_val in problematic_yields:
+            # 找出这个收益率的所有数据点
+            same_yield_mask = np.abs(treasury_yields - yield_val) < 0.001
+            same_yield_indices = np.where(same_yield_mask)[0]
+            
+            # 只保留一部分数据点（随机采样）
+            if len(same_yield_indices) > 5:  # 如果超过5个点，只保留5个
+                np.random.seed(42)  # 固定随机种子以保证可重复性
+                keep_indices = np.random.choice(same_yield_indices, 5, replace=False)
+                remove_indices = np.setdiff1d(same_yield_indices, keep_indices)
+                keep_mask[remove_indices] = False
+        
+        # 应用掩码
+        filtered_ig_returns = ig_returns[keep_mask]
+        filtered_treasury_yields = treasury_yields[keep_mask]
+        
+        print(f"移除了 {len(ig_returns) - len(filtered_ig_returns)} 个垂直线数据点")
+        
+        return filtered_ig_returns, filtered_treasury_yields
+    else:
+        print("未发现形成垂直线的数据")
+        return ig_returns, treasury_yields
+
 def analyze_yield_relationship(ig_returns, treasury_yields):
     """分析收益率与国债收益率的关系"""
     print("\n正在分析收益率关系...")
@@ -244,19 +285,28 @@ def create_visualizations(ig_returns, treasury_yields, yield_groups, results_df,
     """创建可视化图表"""
     print("\n正在创建可视化图表...")
     
+    # 只为可视化清理数据，统计数据保持原始
+    clean_ig_returns, clean_treasury_yields = remove_vertical_line_data(
+        ig_returns.copy(), treasury_yields.copy(), threshold_count=15)
+    
+    # 重新计算清理后数据的分组（仅用于可视化）
+    yield_bins = [0, 1, 2, 3, 4, 5, 100]
+    yield_labels = ['0-1%', '1-2%', '2-3%', '3-4%', '4-5%', '5%+']
+    clean_yield_groups = pd.cut(clean_treasury_yields, bins=yield_bins, labels=yield_labels, include_lowest=True)
+    
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
     # 设置主标题
-    fig.suptitle('美国IG债券收益率概率分析', fontsize=18, fontweight='bold')
+    fig.suptitle('美国IG债券收益率概率分析（可视化已优化，统计数据基于完整原始数据）', fontsize=16, fontweight='bold')
     
-    # 1. 散点图：国债收益率 vs IG债券年化收益率
+    # 1. 散点图：国债收益率 vs IG债券年化收益率（使用清理后的数据进行可视化）
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
     color_map = dict(zip(['0-1%', '1-2%', '2-3%', '3-4%', '4-5%', '5%+'], colors))
     
     for group_label in ['0-1%', '1-2%', '2-3%', '3-4%', '4-5%', '5%+']:
-        mask = yield_groups == group_label
+        mask = clean_yield_groups == group_label
         if np.sum(mask) > 0:
-            axes[0, 0].scatter(treasury_yields[mask], ig_returns[mask] * 100, 
+            axes[0, 0].scatter(clean_treasury_yields[mask], clean_ig_returns[mask] * 100, 
                              alpha=0.6, color=color_map[group_label], 
                              label=f'{group_label}', s=20)
     
@@ -311,10 +361,14 @@ def create_visualizations(ig_returns, treasury_yields, yield_groups, results_df,
     else:
         current_range = '5%+'
     
-    current_mask = yield_groups == current_range
-    if np.sum(current_mask) > 0:
-        current_returns = ig_returns[current_mask] * 100
-        axes[1, 1].hist(current_returns, bins=30, alpha=0.7, 
+    # 使用清理后的数据进行可视化
+    clean_current_mask = clean_yield_groups == current_range
+    # 但使用原始数据的统计信息
+    original_current_mask = yield_groups == current_range
+    
+    if np.sum(clean_current_mask) > 0:
+        current_returns_clean = clean_ig_returns[clean_current_mask] * 100
+        axes[1, 1].hist(current_returns_clean, bins=30, alpha=0.7, 
                        color=color_map[current_range], edgecolor='black')
         axes[1, 1].axvline(x=0, color='red', linestyle='--', linewidth=2, label='零收益率')
         axes[1, 1].set_xlabel('年化收益率 (%)')
@@ -323,12 +377,14 @@ def create_visualizations(ig_returns, treasury_yields, yield_groups, results_df,
         axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
         
-        # 添加统计信息
-        pos_prob = np.mean(current_returns > 0)
-        avg_ret = np.mean(current_returns)
-        axes[1, 1].text(0.05, 0.95, f'正收益率概率: {pos_prob:.1%}\n平均收益率: {avg_ret:.2f}%', 
-                       transform=axes[1, 1].transAxes, verticalalignment='top',
-                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        # 添加统计信息（使用原始完整数据）
+        if np.sum(original_current_mask) > 0:
+            original_current_returns = ig_returns[original_current_mask] * 100
+            pos_prob = np.mean(original_current_returns > 0)
+            avg_ret = np.mean(original_current_returns)
+            axes[1, 1].text(0.05, 0.95, f'正收益率概率: {pos_prob:.1%}\n平均收益率: {avg_ret:.2f}%\n(基于完整数据)', 
+                           transform=axes[1, 1].transAxes, verticalalignment='top',
+                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     plt.tight_layout()
     plt.savefig('ig_probability_analysis.png', dpi=300, bbox_inches='tight')
