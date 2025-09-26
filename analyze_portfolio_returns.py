@@ -185,7 +185,7 @@ def align_data_by_date(hsi_data, ig_data):
     
     return hsi_aligned, ig_aligned
 
-def calculate_portfolio_statistics(hsi_returns, ig_returns, hsi_weight=0.23, ig_weight=0.77):
+def calculate_portfolio_statistics(hsi_returns, ig_returns, start_dates, hsi_weight=0.23, ig_weight=0.77):
     """计算投资组合统计数据"""
     print(f"\n正在计算投资组合统计数据（恒生指数权重: {hsi_weight*100}%, IG债券权重: {ig_weight*100}%）...")
     
@@ -193,6 +193,7 @@ def calculate_portfolio_statistics(hsi_returns, ig_returns, hsi_weight=0.23, ig_
     min_length = min(len(hsi_returns), len(ig_returns))
     hsi_returns = hsi_returns[:min_length]
     ig_returns = ig_returns[:min_length]
+    start_dates = start_dates[:min_length]
     
     # 计算组合收益率
     portfolio_returns = hsi_weight * hsi_returns + ig_weight * ig_returns
@@ -215,6 +216,18 @@ def calculate_portfolio_statistics(hsi_returns, ig_returns, hsi_weight=0.23, ig_
     ig_negative_prob = np.sum(ig_returns < 0) / len(ig_returns)
     portfolio_negative_prob = np.sum(portfolio_returns < 0) / len(portfolio_returns)
     
+    # 添加时间阶段分类
+    time_periods = []
+    for date in start_dates:
+        if date.year <= 2010:
+            time_periods.append('2005-2010')
+        elif date.year <= 2015:
+            time_periods.append('2011-2015')
+        elif date.year <= 2020:
+            time_periods.append('2016-2020')
+        else:
+            time_periods.append('2021-2025')
+    
     return {
         'hsi_mean': hsi_mean,
         'hsi_std': hsi_std,
@@ -228,7 +241,9 @@ def calculate_portfolio_statistics(hsi_returns, ig_returns, hsi_weight=0.23, ig_
         'portfolio_returns': portfolio_returns,
         'hsi_negative_prob': hsi_negative_prob,
         'ig_negative_prob': ig_negative_prob,
-        'portfolio_negative_prob': portfolio_negative_prob
+        'portfolio_negative_prob': portfolio_negative_prob,
+        'start_dates': start_dates,
+        'time_periods': time_periods
     }
 
 def create_visualizations(stats):
@@ -280,12 +295,28 @@ def create_visualizations(stats):
     axes[0, 1].legend(prop={'family': 'sans-serif', 'size': 10})
     axes[0, 1].grid(True, alpha=0.3)
     
-    # 3. 散点图显示相关性（转换为百分比）
-    axes[1, 0].scatter(stats['hsi_returns']*100, stats['ig_returns']*100, alpha=0.6, color='purple')
+    # 3. 散点图显示相关性（转换为百分比），按时间阶段着色
+    time_periods = stats['time_periods']
+    unique_periods = ['2005-2010', '2011-2015', '2016-2020', '2021-2025']
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']  # 红、青、蓝、绿
+    color_map = dict(zip(unique_periods, colors))
+    
+    # 为每个时间阶段绘制散点
+    for period in unique_periods:
+        mask = [p == period for p in time_periods]
+        if any(mask):
+            hsi_period = np.array(stats['hsi_returns'])[mask] * 100
+            ig_period = np.array(stats['ig_returns'])[mask] * 100
+            axes[1, 0].scatter(hsi_period, ig_period, 
+                             alpha=0.7, color=color_map[period], 
+                             label=period, s=30, edgecolors='white', linewidth=0.5)
+    
     axes[1, 0].set_xlabel('恒生指数年化收益率 (%)', fontfamily='sans-serif', fontsize=12)
     axes[1, 0].set_ylabel('IG债券年化收益率 (%)', fontfamily='sans-serif', fontsize=12)
     axes[1, 0].set_title(f'收益率相关性 (相关系数: {stats["correlation"]:.3f})', 
                          fontfamily='sans-serif', fontsize=14, fontweight='bold')
+    axes[1, 0].legend(prop={'family': 'sans-serif', 'size': 9}, loc='best', 
+                     title='时间阶段', title_fontsize=10)
     axes[1, 0].grid(True, alpha=0.3)
     
     # 4. 风险收益图（转换为百分比，用权重表示面积大小）
@@ -345,8 +376,10 @@ def main():
         print("\n计算IG债券年化收益率...")
         ig_annual_returns, ig_dates = calculate_annual_returns(ig_aligned)
         
-        # 5. 计算统计数据
-        stats = calculate_portfolio_statistics(hsi_annual_returns, ig_annual_returns)
+        # 5. 计算统计数据（使用对齐的开始日期）
+        min_dates = min(len(hsi_dates), len(ig_dates))
+        aligned_dates = hsi_dates[:min_dates] if len(hsi_dates) <= len(ig_dates) else ig_dates[:min_dates]
+        stats = calculate_portfolio_statistics(hsi_annual_returns, ig_annual_returns, aligned_dates)
         
         # 6. 输出结果
         print("\n" + "="*60)
